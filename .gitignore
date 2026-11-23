@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+build/
+dist/
+.venv/
+.DS_Store
+node_modules/
+# training runs write here; the results that the notebooks read are copied to results/
+runs/
