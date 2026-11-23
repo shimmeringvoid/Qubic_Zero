@@ -11,3 +11,7 @@ dist/
 node_modules/
 # training runs write here; the results that the notebooks read are copied to results/
 runs/
+# a finished run keeps its log and its final weights; checkpoints and numbered snapshots are not stored
+results/**/checkpoint.pt
+results/**/checkpoint.tmp
+results/**/weights/round_*.npz
