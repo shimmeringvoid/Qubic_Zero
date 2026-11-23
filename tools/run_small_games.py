@@ -1,6 +1,6 @@
 """Train the players of the small games whose logs and weights are stored in results/.
 
-    python tools/run_small_games.py            # everything, two runs at a time (about 40 minutes on two cores)
+    python tools/run_small_games.py            # everything, two runs at a time (about 35 minutes on two cores)
     python tools/run_small_games.py 3x3        # only the runs whose name starts with "3x3"
 
 Each run is one seed of one setting.  A run that is already complete is left
