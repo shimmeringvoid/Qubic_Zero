@@ -35,6 +35,7 @@ __all__ = [
     "solve",
     "threat_search",
     "threat_moves",
+    "forced_win_length",
     "ThreatResult",
     "check_wins_every_game",
     "WalkReport",
@@ -132,9 +133,9 @@ class ThreatResult:
         return self.move is not None
 
 
-def _threat_dfs(bits: _Bits, att: int, dfn: int, memo: dict, budget: list) -> int:
-    """A first move (as a bit) of a win by continuous threats for ``att``, or 0."""
-    key = (att, dfn)
+def _threat_dfs(bits: _Bits, att: int, dfn: int, memo: dict, budget: list, moves_left: int = 99) -> int:
+    """A first move (as a bit) of a win by continuous threats for ``att`` in at most ``moves_left`` moves, or 0."""
+    key = (att, dfn, moves_left)
     known = memo.get(key)
     if known is not None:
         return known
@@ -145,6 +146,9 @@ def _threat_dfs(bits: _Bits, att: int, dfn: int, memo: dict, budget: list) -> in
     if win:
         memo[key] = win
         return win
+    if moves_left <= 1:
+        memo[key] = 0
+        return 0
     result = 0
     if must:
         # The other player threatens: the only move is to block, and the chain of
@@ -159,7 +163,7 @@ def _threat_dfs(bits: _Bits, att: int, dfn: int, memo: dict, budget: list) -> in
             result = cell
             break
         # one threat: the reply is forced onto that cell, and then it is ``att``'s move again
-        if _threat_dfs(bits, att | cell, dfn | aims, memo, budget):
+        if _threat_dfs(bits, att | cell, dfn | aims, memo, budget, moves_left - 1):
             result = cell
             break
     memo[key] = result
@@ -184,6 +188,22 @@ def threat_search(game: LineGame, board: np.ndarray, max_nodes: int = 200_000) -
     except SearchBudgetExceeded:
         return ThreatResult(move=None, nodes=max_nodes, complete=False)
     return ThreatResult(move=(move.bit_length() - 1) if move else None, nodes=max_nodes - budget[0])
+
+
+def forced_win_length(game: LineGame, board: np.ndarray, limit: int = 12, max_nodes: int = 200_000) -> int | None:
+    """Moves the player to move needs for the shortest win by threats: 1 completes a line, 2 threatens twice first, ...
+
+    ``None`` if the threat search finds no win within ``limit`` moves.
+    """
+    bits = _bits(game)
+    att, dfn = to_bits(game, board)
+    for moves in range(1, limit + 1):
+        try:
+            if _threat_dfs(bits, att, dfn, {}, [max_nodes], moves):
+                return moves
+        except SearchBudgetExceeded:
+            return None
+    return None
 
 
 def threat_moves(game: LineGame, board: np.ndarray, max_nodes: int = 200_000) -> list[int]:
@@ -386,9 +406,9 @@ class WalkReport:
     choose a move.  ``wins`` counts the lines of play that ended with its line
     on the board, ``by_threats`` the positions closed by a forced win that the
     threat search vouched for.  ``failures`` lists positions in which the game
-    ended without a win for the player; ``open`` lists positions that were not
-    examined because the limit was reached.  The claim is proven when both
-    lists are empty.
+    ended in a way that the goal does not allow, each with the reason; ``open``
+    lists positions that were not examined because the limit was reached.  The
+    claim is proven when both lists are empty.
     """
 
     decisions: int = 0
@@ -397,6 +417,7 @@ class WalkReport:
     deepest: int = 0
     failures: list = field(default_factory=list)
     open: list = field(default_factory=list)
+    positions: list = field(default_factory=list)
 
     @property
     def proven(self) -> bool:
@@ -410,14 +431,26 @@ def check_wins_every_game(
     threats: str = "follow",
     max_decisions: int = 200_000,
     max_failures: int = 20,
+    rng=None,
+    goal: str = "win",
+    moves_second: bool = False,
+    keep_positions: bool = False,
 ) -> WalkReport:
     """Does ``player`` win from ``start`` whatever the opponent replies?
 
-    ``player(board) -> move`` must be deterministic.  It is always asked about
-    the canonical image of a position (:meth:`LineGame.canonical`) and its answer
-    is mapped back, so that positions which differ by a symmetry need to be
-    examined only once; the player that is checked is therefore "``player``
-    applied to the canonical image", and that is the player to use afterwards.
+    With ``goal="draw"`` the question is the weaker one that suits a drawn game
+    such as tic-tac-toe: does ``player`` never lose?  With ``moves_second=True``
+    the opponent moves first in ``start``, and every such first move is tried.
+    With ``keep_positions=True`` the report lists every position in which the
+    player had to choose (``report.positions``).
+
+    ``player(game, boards, rng) -> moves`` is a player as everywhere in this
+    package, and must be deterministic.  It is always shown the canonical image
+    of a position (:meth:`LineGame.canonical`), so that positions which differ by
+    a symmetry need to be examined only once; the player that is checked is
+    therefore "``player`` applied to the canonical image", and that is the
+    player to use afterwards.  The check goes through the game move by move: all
+    positions the player can face after its n-th move are handed to it together.
 
     ``threats`` says how the exact threat search takes part:
 
@@ -431,55 +464,78 @@ def check_wins_every_game(
     """
     if threats not in ("off", "follow", "trust"):
         raise ValueError("threats must be 'off', 'follow' or 'trust'")
+    if goal not in ("win", "draw"):
+        raise ValueError("goal must be 'win' or 'draw'")
     report = WalkReport()
-    seen: set[bytes] = set()
     board = game.empty() if start is None else np.array(start, dtype=np.int8)
-    me = int(game.to_move(board))
-
-    def visit(board: np.ndarray, depth: int) -> None:
-        image, which = game.canonical(board)
-        key = image.tobytes()
-        if key in seen:
-            return
-        seen.add(key)
-        if len(report.failures) >= max_failures:
-            return
-        if report.decisions >= max_decisions:
-            report.open.append(image)
-            return
-        report.decisions += 1
-        report.deepest = max(report.deepest, depth)
-        move = None
+    if moves_second:
+        opening = np.repeat(board[None], int((board == 0).sum()), axis=0)
+        opening[np.arange(len(opening)), np.flatnonzero(board == 0)] = game.to_move(board)
+        images = {image.tobytes(): image for image in game.canonical(opening)[0]}
+        level = np.stack(list(images.values()))
+    else:
+        level = game.canonical(board)[0][None]
+    me = int(game.to_move(level[0]))
+    seen = {image.tobytes() for image in level}
+    depth = 0
+    while len(level) and len(report.failures) < max_failures:
+        room = max_decisions - report.decisions
+        if len(level) > room:
+            report.open.extend(level[room:])
+            level = level[:room]
+            if not len(level):
+                break
+        report.decisions += len(level)
+        report.deepest = depth
+        if keep_positions:
+            report.positions.extend(level)
+        moves = np.full(len(level), -1, dtype=np.int64)
         if threats != "off":
-            forced = threat_search(game, image)
-            if forced.win:
-                if threats == "trust":
-                    report.by_threats += 1
-                    return
-                move = forced.move
-        if move is None:
-            move = int(player(image))
-        after = image.copy()
-        if after[move] != 0:
-            report.failures.append((image, "the player chose a cell that was taken"))
-            return
-        after[move] = me
-        if game.winner(after) == me:
-            report.wins += 1
-            return
-        replies = np.flatnonzero(after == 0)
-        if replies.size == 0:
-            report.failures.append((after, "the board filled up without a winner"))
-            return
-        for reply in replies:
-            nxt = after.copy()
-            nxt[reply] = -me
-            if game.winner(nxt) == -me:
-                report.failures.append((nxt, "the opponent completed a line"))
-            elif (nxt != 0).all():
-                report.failures.append((nxt, "the board filled up without a winner"))
-            else:
-                visit(nxt, depth + 1)
-
-    visit(board, 0)
+            for i, position in enumerate(level):
+                forced = threat_search(game, position)
+                if forced.win:
+                    moves[i] = forced.move
+            if threats == "trust":
+                report.by_threats += int((moves >= 0).sum())
+                level = level[moves < 0]
+                moves = moves[moves < 0]
+        ask = moves < 0
+        if ask.any():
+            moves[ask] = player(game, level[ask], rng)
+        rows = np.arange(len(level))
+        taken = level[rows, moves] != 0
+        for position in level[taken]:
+            report.failures.append((position, "the player chose a cell that was taken"))
+        level, moves = level[~taken], moves[~taken]
+        after = level.copy()
+        after[np.arange(len(level)), moves] = me
+        won = game.winner(after) == me
+        report.wins += int(won.sum())
+        after = after[~won]
+        if goal == "win":
+            for position in after[(after != 0).all(axis=1)]:
+                report.failures.append((position, "the board filled up without a winner"))
+        after = after[(after == 0).any(axis=1)]
+        # every reply to every position
+        which, reply = np.nonzero(after == 0)
+        replies = after[which]
+        replies[np.arange(len(reply)), reply] = -me
+        lost = game.winner(replies) == -me
+        for position in replies[lost][:max_failures]:
+            report.failures.append((position, "the opponent completed a line"))
+        replies = replies[~lost]
+        full = (replies != 0).all(axis=1)
+        if goal == "win":
+            for position in replies[full][:max_failures]:
+                report.failures.append((position, "the board filled up without a winner"))
+        replies = replies[~full]
+        following = []
+        if len(replies):
+            for image in game.canonical(replies)[0]:
+                key = image.tobytes()
+                if key not in seen:
+                    seen.add(key)
+                    following.append(image)
+        level = np.stack(following) if following else np.empty((0, game.n_cells), dtype=np.int8)
+        depth += 1
     return report

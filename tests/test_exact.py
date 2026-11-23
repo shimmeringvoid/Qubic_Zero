@@ -4,6 +4,7 @@ import pytest
 from qubic_zero import (
     check_wins_every_game,
     cube3,
+    forced_win_length,
     play_games,
     qubic,
     random_player,
@@ -115,11 +116,13 @@ def test_threat_search_on_qubic_positions_built_by_hand():
     board = _board(game, [cell(0, 0, 0), cell(0, 0, 1), cell(0, 0, 2)], [cell(3, 3, 3), cell(3, 3, 2), cell(2, 0, 0)])
     assert threat_search(game, board).move == cell(0, 0, 3)
     assert threat_moves(game, board) == [cell(0, 0, 3)]
+    assert forced_win_length(game, board) == 1
 
     # two lines through one empty cell, two stones on each: playing there threatens twice
     board = _board(game, [cell(0, 0, 1), cell(0, 0, 2), cell(1, 0, 0), cell(2, 0, 0)], [cell(3, 3, 3), cell(3, 3, 2), cell(2, 2, 1), cell(1, 3, 1)])
     result = threat_search(game, board)
     assert result.win and cell(0, 0, 0) in threat_moves(game, board)
+    assert forced_win_length(game, board) == 2  # threaten twice, then complete whichever line is left open
 
     # the opponent has three in a row: with nothing forcing of one's own, there is no forced win
     board = _board(game, [cell(0, 0, 0), cell(1, 1, 1), cell(2, 3, 0)], [cell(3, 0, 0), cell(3, 0, 1), cell(3, 0, 2)])
@@ -127,6 +130,7 @@ def test_threat_search_on_qubic_positions_built_by_hand():
 
     # nothing on the board: no forced win of this kind
     assert not threat_search(game, game.empty()).win
+    assert forced_win_length(game, game.empty()) is None
 
     # a tiny limit is reported, not hidden
     busy = play_until(game, 14)
@@ -160,31 +164,94 @@ def test_forced_wins_found_on_qubic_hold_up_in_play():
         assert result.outcome[0] == game.to_move(start)
 
 
+def _first_empty(game, boards, rng=None):
+    return (boards == 0).argmax(axis=1)
+
+
 def test_a_perfect_player_passes_the_exhaustive_check_on_three_cubed():
     game = cube3()
     shared: dict = {}
 
-    def perfect(board):
-        for move in np.flatnonzero(board == 0):
-            after = game.play(board, move)
-            if game.winner(after) != 0 or solve(game, after, table=shared) == -1:
-                return move
-        raise AssertionError("no winning move in a position that should be won")
+    def perfect(game, boards, rng=None):
+        moves = []
+        for board in boards:
+            for move in np.flatnonzero(board == 0):
+                after = game.play(board, move)
+                if game.winner(after) != 0 or solve(game, after, table=shared) == -1:
+                    moves.append(move)
+                    break
+            else:
+                raise AssertionError("no winning move in a position that should be won")
+        return np.array(moves)
 
     reports = {mode: check_wins_every_game(game, perfect, threats=mode) for mode in ("off", "follow", "trust")}
     assert all(report.proven and report.decisions > 0 for report in reports.values())
     assert reports["trust"].by_threats > 0 and reports["off"].wins > 0
     assert reports["trust"].decisions <= reports["follow"].decisions
+    assert reports["off"].deepest >= 2
 
 
 def test_the_exhaustive_check_catches_a_player_that_can_be_beaten():
     game = cube3()
-    report = check_wins_every_game(game, lambda board: int(np.flatnonzero(board == 0)[0]), threats="off")
+    report = check_wins_every_game(game, _first_empty, threats="off")
     assert not report.proven and report.failures
     position, reason = report.failures[0]
     assert "opponent" in reason or "filled" in reason
+    assert game.winner(position) == -1 or (position != 0).all()
     # tic-tac-toe is a draw, so no first player passes
-    draw = check_wins_every_game(tictactoe(), lambda board: int(np.flatnonzero(board == 0)[0]))
+    draw = check_wins_every_game(tictactoe(), _first_empty)
     assert not draw.proven
-    limited = check_wins_every_game(game, lambda board: int(np.flatnonzero(board == 0)[0]), threats="off", max_decisions=3, max_failures=10**6)
-    assert limited.open
+    limited = check_wins_every_game(game, _first_empty, threats="off", max_decisions=3, max_failures=10**6)
+    assert limited.open and limited.decisions == 3
+    with pytest.raises(ValueError):
+        check_wins_every_game(game, _first_empty, threats="sometimes")
+
+
+def test_the_exhaustive_check_can_start_from_any_position_and_for_either_side():
+    game = tictactoe()
+    table = solve_table(game)
+
+    def perfect(game, boards, rng=None):
+        return table.best[table.lookup(boards)].argmax(axis=1)
+
+    second_to_move = game.to_move(table.boards) == -1
+    roomy = (table.boards == 0).sum(axis=1) >= 5
+    won = table.boards[np.flatnonzero(table.decision & second_to_move & roomy & (table.outcome == 1))[0]]
+    drawn = table.boards[np.flatnonzero(table.decision & second_to_move & roomy & (table.outcome == 0))[0]]
+    report = check_wins_every_game(game, perfect, start=won, threats="off")
+    assert report.proven and report.wins > 0
+    assert not check_wins_every_game(game, perfect, start=drawn, threats="off").proven
+
+
+def test_a_perfect_tictactoe_player_never_loses_from_either_side():
+    game = tictactoe()
+    table = solve_table(game)
+
+    def perfect(game, boards, rng=None):
+        return table.best[table.lookup(boards)].argmax(axis=1)
+
+    first = check_wins_every_game(game, perfect, goal="draw", threats="off", keep_positions=True)
+    second = check_wins_every_game(game, perfect, goal="draw", threats="off", moves_second=True)
+    assert first.proven and second.proven and first.decisions > 10 and second.decisions > 10
+    assert len(first.positions) == first.decisions and not second.positions
+    assert (game.to_move(np.stack(first.positions)) == 1).all() and (first.positions[0] == 0).all()
+    assert not check_wins_every_game(game, perfect, threats="off").proven  # it cannot win every game: best play draws
+    careless = check_wins_every_game(game, _first_empty, goal="draw", threats="off", moves_second=True)
+    assert not careless.proven and "opponent" in careless.failures[0][1]
+    with pytest.raises(ValueError):
+        check_wins_every_game(game, perfect, goal="lose")
+
+
+def test_the_length_of_a_forced_win_agrees_with_the_discounted_table():
+    """On tic-tac-toe a win in n own moves is worth discount^(2n - 1), so the table knows the shortest win."""
+    game = tictactoe()
+    table = solve_table(game, discount=0.9)
+    checked = 0
+    for i in np.flatnonzero(table.decision & (table.outcome == 1)):
+        length = forced_win_length(game, table.boards[i])
+        if length is not None:
+            checked += 1
+            assert table.value[i] >= 0.9 ** (2 * length - 1) - 1e-9  # the true shortest win is at least as short
+            if length == 1:
+                assert table.value[i] == pytest.approx(0.9)
+    assert checked > 2500

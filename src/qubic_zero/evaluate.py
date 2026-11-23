@@ -17,11 +17,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .exact import Table, _bits, _scan, solve_table, threat_moves, to_bits
+from .exact import Table, _bits, _scan, solve, solve_table, threat_moves, to_bits
 from .games import LineGame
 from .players import play_games, random_player, rule_player
 
-__all__ = ["table_score", "value_error", "match", "TacticsSuite", "standard_evaluators"]
+__all__ = ["table_score", "value_error", "match", "solved_sample", "TacticsSuite", "standard_evaluators"]
 
 
 def table_score(table: Table, player, rng=None) -> dict:
@@ -68,6 +68,51 @@ def match(game: LineGame, player, opponent, n_games: int, rng: np.random.Generat
     }
 
 
+def _mixed_player(game, boards, rng, careful: float = 0.7):
+    """Mostly the rule-based player, sometimes a random move: games that visit all sorts of positions."""
+    rules = rng.random(len(boards)) < careful
+    return np.where(rules, rule_player(game, boards, rng), random_player(game, boards, rng))
+
+
+def solved_sample(game: LineGame, n: int = 1000, seed: int = 0, max_nodes: int = 2_000_000) -> Table:
+    """A sample of positions of a game, each solved exactly, for games too large to solve in full.
+
+    The positions come from games between the rule-based and the random player
+    and are distinct up to symmetry.  Each move of each position is searched to
+    the end of the game (:func:`~qubic_zero.exact.solve`), so the result can be
+    used like the table of a fully solved game: ``table_score(sample, player)``.
+    Depths are not worked out, so ``fastest`` is the same as ``best`` here.
+    Practical on 3 x 3 x 3; out of reach on Qubic.
+    """
+    rng = np.random.default_rng(seed)
+    chosen: dict[bytes, np.ndarray] = {}
+    while len(chosen) < n:
+        boards = game.empty(256)
+        for _ in range(game.n_cells):
+            boards = boards[~game.finished(boards)]
+            if len(boards) == 0:
+                break
+            keep = rng.random(len(boards)) < 0.15
+            for image in game.canonical(boards[keep])[0] if keep.any() else []:
+                if len(chosen) < n:
+                    chosen.setdefault(image.tobytes(), image)
+            boards = game.play(boards, _mixed_player(game, boards, rng))
+    boards = np.stack(list(chosen.values()))
+    shared: dict = {}
+    best = np.zeros(boards.shape, dtype=bool)
+    outcome = np.zeros(len(boards), dtype=np.int8)
+    for i, board in enumerate(boards):
+        values = {}
+        for move in np.flatnonzero(board == 0):
+            after = game.play(board, move)
+            values[int(move)] = 1 if game.winner(after) != 0 else -solve(game, after, max_nodes=max_nodes, table=shared)
+        outcome[i] = max(values.values())
+        best[i, [m for m, v in values.items() if v == outcome[i]]] = True
+    none = np.full(boards.shape, -1, dtype=np.int64)
+    index = {b.tobytes(): i for i, b in enumerate(boards)}
+    return Table(game, 1.0, boards, outcome.astype(float), outcome, np.zeros(len(boards), dtype=bool), best, best, none, index)
+
+
 @dataclass
 class TacticsSuite:
     """Positions with an exact answer, found by the threat search.
@@ -96,10 +141,6 @@ class TacticsSuite:
         bits = _bits(game)
         found = {kind: {} for kind in ("win", "block", "force")}
 
-        def mixed(game, boards, rng):
-            careful = rng.random(len(boards)) < 0.7
-            return np.where(careful, rule_player(game, boards, rng), random_player(game, boards, rng))
-
         for _ in range(max_tries):
             if all(len(v) >= per_kind for v in found.values()):
                 break
@@ -123,7 +164,7 @@ class TacticsSuite:
                         right = np.zeros(game.n_cells, dtype=bool)
                         right[moves] = True
                         found[kind][key] = (board, right)
-                boards = game.play(boards, mixed(game, boards, rng))
+                boards = game.play(boards, _mixed_player(game, boards, rng))
         boards = {kind: np.stack([b for b, _ in v.values()]) for kind, v in found.items() if v}
         right = {kind: np.stack([r for _, r in v.values()]) for kind, v in found.items() if v}
         return cls(game, boards, right)
@@ -143,46 +184,63 @@ class TacticsSuite:
 def standard_evaluators(game: LineGame, config, n_games: int = 200, per_kind: int = 200, seed: int = 12345) -> list:
     """The evaluations written to a run's log.
 
-    Every one is done twice: for the network alone, and for the network with the
-    tree search it is trained with.  On tic-tac-toe: all positions against the
-    exact table.  On the larger games: the tactics suite, and matches against the
-    rule-based player from both sides.
+    Every one is done twice: for the network alone (keys starting with ``net_``),
+    and for the network with the tree search it is trained with (``search_``).
+
+    * Tic-tac-toe: every position against the exact table.
+    * 3 x 3 x 3: a sample of 1,500 exactly solved positions, the tactics suite,
+      and matches against the rule-based player from both sides.
+    * Qubic: the tactics suite and the matches.
     """
     from .agents import PolicyPlayer, SearchPlayer
 
-    def players(trainer):
-        net = trainer.net
-        return {"net": PolicyPlayer(net), "search": SearchPlayer(net, config.n_sims, config.c_puct, config.discount)}
+    def both(trainer, boards):
+        """Moves and values of the two players on the same positions."""
+        scores, values = PolicyPlayer(trainer.net).scores_and_values(game, boards)
+        searcher = SearchPlayer(trainer.net, config.n_sims, config.c_puct, config.discount)
+        visits, searched = searcher.visits(game, boards)
+        return {"net": (scores.argmax(axis=1), values), "search": (visits.argmax(axis=1), searched)}
 
-    if game.name == "3x3":
-        table = solve_table(game, discount=config.discount)
+    def fixed(moves):
+        return lambda game, boards, rng=None: moves
 
-        def against_table(trainer):
+    def against_exact(table, with_values):
+        idx = np.flatnonzero(table.decision)
+
+        def evaluator(trainer):
             out = {}
-            for name, player in players(trainer).items():
-                out.update({f"{name}_{k}": v for k, v in table_score(table, player).items()})
-            idx = np.flatnonzero(table.decision)
-            _, values = PolicyPlayer(trainer.net).scores_and_values(game, table.boards[idx])
-            out.update({f"net_{k}": v for k, v in value_error(table, values).items()})
-            _, values = SearchPlayer(trainer.net, config.n_sims, config.c_puct, config.discount).visits(game, table.boards[idx])
-            out.update({f"search_{k}": v for k, v in value_error(table, values).items()})
+            for name, (moves, values) in both(trainer, table.boards[idx]).items():
+                out.update({f"{name}_{k}": v for k, v in table_score(table, fixed(moves)).items()})
+                if with_values:
+                    out.update({f"{name}_{k}": v for k, v in value_error(table, values).items()})
             return out
 
-        return [against_table]
+        return evaluator
+
+    if game.name == "3x3":
+        return [against_exact(solve_table(game, discount=config.discount), with_values=True)]
 
     suite = TacticsSuite.build(game, per_kind=per_kind, seed=seed)
 
     def tactics(trainer):
         out = {}
-        for name, player in players(trainer).items():
-            out.update({f"{name}_{kind}": share for kind, share in suite.score(player).items()})
+        for kind, boards in suite.boards.items():
+            for name, (moves, _) in both(trainer, boards).items():
+                out[f"{name}_{kind}"] = float(suite.right[kind][np.arange(len(boards)), moves].mean())
         return out
 
     def against_rules(trainer):
         rng = np.random.default_rng(seed)
+        players = {
+            "net": PolicyPlayer(trainer.net),
+            "search": SearchPlayer(trainer.net, config.n_sims, config.c_puct, config.discount),
+        }
         out = {}
-        for name, player in players(trainer).items():
+        for name, player in players.items():
             out.update({f"{name}_{k}": v for k, v in match(game, player, rule_player, n_games, rng).items()})
         return out
 
-    return [tactics, against_rules]
+    evaluators = [tactics, against_rules]
+    if game.name == "3x3x3":
+        evaluators.insert(0, against_exact(solved_sample(game, n=1500, seed=seed), with_values=False))
+    return evaluators

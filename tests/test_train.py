@@ -92,7 +92,8 @@ def test_a_run_can_be_started_from_the_command_line(tmp_path, capsys):
     args = ["--run-dir", str(tmp_path / "cli"), "--game", "3x3", "--width", "8", "--depth", "1", "--n-games", "16", "--n-sims", "4",
             "--positions", "320", "--memory", "500", "--warmup", "50", "--batch-size", "16", "--evaluate-every", "20"]  # fmt: skip
     main(args)
-    assert "stopped at round 20" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "stopped at round 20" in out and "320 positions" in out and "scored  network alone:" in out
     assert json.loads((tmp_path / "cli" / "config.json").read_text())["n_sims"] == 4
     main(["--run-dir", str(tmp_path / "cli"), "--positions", "480"])  # the same run, given a longer budget
     out = capsys.readouterr().out

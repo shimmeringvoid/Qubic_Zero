@@ -131,7 +131,7 @@ if torch is not None:
             self.value = nn.Sequential(nn.Linear(game.n_cells, 64), nn.ReLU(), nn.Linear(64, 1))
 
         def forward(self, boards):
-            x = torch.stack([boards == 1, boards == -1], dim=1).float().reshape(-1, 2, *self.shape)
+            x = torch.stack([boards == 1, boards == -1], dim=1).to(self.first.weight.dtype).reshape(-1, 2, *self.shape)
             x = self.tower(torch.relu(self.first(x)))
             scores = self.policy(torch.relu(self.policy_conv(x)).flatten(1))
             return scores, torch.tanh(self.value(torch.relu(self.value_conv(x)).flatten(1))).squeeze(-1)

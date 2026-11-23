@@ -38,7 +38,7 @@ from .games import LineGame, game_by_name
 from .net import count_weights, make_net, save_weights
 from .search import BatchedSearch
 
-__all__ = ["Config", "SelfPlay", "Replay", "Trainer", "policy_value_loss", "main"]
+__all__ = ["Config", "PRESETS", "SelfPlay", "Replay", "Trainer", "policy_value_loss", "main"]
 
 
 @dataclass
@@ -78,6 +78,22 @@ class Config:
 
     def replace(self, **changes) -> Config:
         return Config(**{**asdict(self), **changes})
+
+
+#: Settings that are known to work, by name.  The small games are sized for a CPU: a run takes a few minutes.
+PRESETS = {
+    "3x3": Config(
+        game="3x3", width=32, depth=3, n_games=256, n_sims=32, discount=0.9, noise_alpha=1.0, sampled_moves=4,
+        memory=50_000, batch_size=256, warmup=2_000, positions=102_400,
+        report_every=20, evaluate_every=40, snapshot_every=10**9,
+    ),
+    "3x3x3": Config(
+        game="3x3x3", width=32, depth=3, n_games=256, n_sims=32, discount=0.95, noise_alpha=0.5, sampled_moves=4,
+        memory=100_000, batch_size=256, warmup=3_000, positions=128_000,
+        report_every=25, evaluate_every=50, snapshot_every=10**9,
+    ),
+    "4x4x4": Config(),
+}  # fmt: skip
 
 
 def policy_value_loss(net, boards, policy, value):
@@ -355,8 +371,7 @@ class Trainer:
             with open(self.run_dir / "log.jsonl", "a") as log:
                 log.write(json.dumps(record) + "\n")
         if not self.quiet:
-            shown = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in record.items() if not isinstance(v, (list, dict))}
-            print(" ".join(f"{k}={v}" for k, v in shown.items()), flush=True)
+            print(_line(record), flush=True)
         return record
 
     # --- stopping and going on ------------------------------------------------------------
@@ -400,6 +415,30 @@ class Trainer:
         self.history = state["history"]
         if not self.quiet:
             print(f"continuing {self.run_dir} from round {self.rounds:,} ({self.positions:,} positions, {self.games:,} games)")
+
+
+def _line(record: dict) -> str:
+    """A report in one or two short lines; the log file has every number."""
+    parts = [f"{record['positions']:>10,} positions", f"{record['games']:>8,} games", f"{record['seconds'] / 3600:6.2f} h"]
+    if "policy_loss" in record:
+        parts.append(f"loss {record['policy_loss']:.3f} + {record['value_loss']:.3f}")
+    if "moves_per_game" in record:
+        parts.append(f"first player wins {record['first_player_share']:.0%}, {record['moves_per_game']:.1f} moves a game")
+    text = " | ".join(parts)
+    scores = []
+    for who in ("net", "search"):
+        mine = []
+        if f"{who}_mistakes" in record:
+            mine.append(f"{record[f'{who}_mistakes']} mistakes")
+        if f"{who}_force" in record:
+            mine.append("win/block/force " + "/".join(f"{record[f'{who}_{kind}']:.0%}" for kind in ("win", "block", "force")))
+        if f"{who}_first_won" in record:
+            mine.append(f"v. rule player {record[f'{who}_first_won']:.0%} first, {record[f'{who}_second_won']:.0%} second")
+        if mine:
+            scores.append(f"{'network alone' if who == 'net' else 'with search'}: " + ", ".join(mine))
+    if scores:
+        text += "\n" + " " * 12 + "scored  " + "; ".join(scores)
+    return text
 
 
 def _pack(arrays: dict) -> bytes:
@@ -472,13 +511,17 @@ def main(argv=None) -> None:
     parser.add_argument("--run-dir", required=True, help="folder of the run; continued if it already holds one")
     parser.add_argument("--hours", type=float, default=None, help="stop (and checkpoint) after this many hours")
     parser.add_argument("--device", default=None, help="cuda or cpu (default: cuda if there is one)")
+    parser.add_argument("--preset", default=None, choices=sorted(PRESETS), help="start from these settings (new runs only)")
     for f in fields(Config):
         parser.add_argument(f"--{f.name.replace('_', '-')}", type=type(f.default), default=None, help=f"default {f.default}")
     args = vars(parser.parse_args(argv))
-    run_dir, hours, device = Path(args.pop("run_dir")), args.pop("hours"), args.pop("device")
+    run_dir, hours, device, preset = Path(args.pop("run_dir")), args.pop("hours"), args.pop("device"), args.pop("preset")
     given = {name: value for name, value in args.items() if value is not None}
     stored = run_dir / "config.json"
-    config = Config(**json.loads(stored.read_text())) if stored.exists() else Config()
+    if stored.exists():
+        config = Config(**json.loads(stored.read_text()))
+    else:
+        config = PRESETS[preset or given.get("game", "4x4x4")]
     config = config.replace(**given)
     trainer = Trainer(config, run_dir, device=device)
     trainer.evaluators = standard_evaluators(trainer.game, config)
