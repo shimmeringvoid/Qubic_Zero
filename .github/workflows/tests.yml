@@ -38,6 +38,7 @@ jobs:
           miniforge-version: latest
           environment-file: environment.yml
           activate-environment: qubic-zero
+          channels: conda-forge # named here as well: left to read environment.yml, the action warns about its `nodefaults` line
           conda-remove-defaults: "true"
       - run: conda list "^(python|numpy|pytorch)$"
       - run: pytest -q
