@@ -11,8 +11,8 @@ jobs:
       matrix:
         python-version: ["3.10", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -32,11 +32,13 @@ jobs:
       run:
         shell: bash -el {0} # a login shell, in which the action below has the environment active
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: conda-incubator/setup-miniconda@v4
         with:
           miniforge-version: latest
           environment-file: environment.yml
           activate-environment: qubic-zero
+          channels: conda-forge # named here as well: left to read environment.yml, the action warns about its `nodefaults` line
+          conda-remove-defaults: "true"
       - run: conda list "^(python|numpy|pytorch)$"
       - run: pytest -q

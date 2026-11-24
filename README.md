@@ -91,18 +91,18 @@ on tic-tac-toe (12 against 28). ([2](notebooks/02_small_games.ipynb))
   exact check gets, and what exact search has to add at play time, are the later stages.
 * The size of the line network was not varied. The interface (a 3D board in the browser) is not
   built; there is a game in the terminal.
-* The tests were run on Python 3.13 only. The Codespaces, Colab and Binder set-ups are written as
-  for MDP_Experiments but could not be tried before the repository was online.
-* **The conda environment was tried on Linux without a GPU only**, created with conda 26.10
-  (Python 3.13, NumPy 2.5, PyTorch 2.14, all from conda-forge). There the tests pass, the training
-  command runs, and the four notebooks run, the first three with the same sentences as are stored
-  here. For Windows, macOS and machines with an NVIDIA card, only conda's choice of packages was
-  looked at, with the operating system and the driver given to it by hand; nothing was run there.
-  Nor was it tried with Anaconda's own channel (`defaults`) configured, as Anaconda and Miniconda
+* The tests run with Python 3.10 and 3.13 in the test workflow; everything else here was run with
+  Python 3.13 only. The Codespaces, Colab and Binder set-ups are written as for MDP_Experiments
+  but could not be tried before the repository was online.
+* **The conda environment has only run on CPUs.** The test workflow creates it on Linux, on macOS
+  (Apple silicon) and on Windows and runs the tests in it, and they pass on all three (Python
+  3.13, NumPy 2.5, PyTorch 2.14, all from conda-forge). The training command and the four
+  notebooks were run in it on Linux only; the first three notebooks print the same sentences as
+  are stored here. For machines with an NVIDIA card, only conda's choice of packages was looked
+  at, with the driver given to it by hand. Apple's GPUs (`--device mps`) are untried. Nor was the
+  environment tried with Anaconda's own channel (`defaults`) configured, as Anaconda and Miniconda
   installs have it: conda 26.10 then consults that channel too, after conda-forge, in spite of the
-  `nodefaults` line. The test workflow creates the environment on Linux, macOS and Windows and runs
-  the tests in it; that job had not yet run when this was written. Apple's GPUs (`--device mps`)
-  are untried.
+  `nodefaults` line.
 
 ## The notebooks
 
@@ -133,7 +133,7 @@ With pip, into a Python environment of your choice:
 ```bash
 git clone https://github.com/shimmeringvoid/Qubic_Zero.git && cd Qubic_Zero
 pip install -e ".[train,notebooks,dev]"   # the library, PyTorch, Jupyter, pytest
-pytest                                     # under a minute
+pytest                                     # about a minute
 jupyter lab notebooks
 ```
 
