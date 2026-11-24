@@ -19,3 +19,24 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check src tests tools
       - run: pytest -q
+
+  conda:
+    # the conda environment of environment.yml, created and tested on three operating systems
+    name: conda on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash -el {0} # a login shell, in which the action below has the environment active
+    steps:
+      - uses: actions/checkout@v4
+      - uses: conda-incubator/setup-miniconda@v4
+        with:
+          miniforge-version: latest
+          environment-file: environment.yml
+          activate-environment: qubic-zero
+      - run: conda list "^(python|numpy|pytorch)$"
+      - run: pytest -q

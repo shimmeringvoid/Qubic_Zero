@@ -93,6 +93,16 @@ on tic-tac-toe (12 against 28). ([2](notebooks/02_small_games.ipynb))
   built; there is a game in the terminal.
 * The tests were run on Python 3.13 only. The Codespaces, Colab and Binder set-ups are written as
   for MDP_Experiments but could not be tried before the repository was online.
+* **The conda environment was tried on Linux without a GPU only**, created with conda 26.10
+  (Python 3.13, NumPy 2.5, PyTorch 2.14, all from conda-forge). There the tests pass, the training
+  command runs, and the four notebooks run, the first three with the same sentences as are stored
+  here. For Windows, macOS and machines with an NVIDIA card, only conda's choice of packages was
+  looked at, with the operating system and the driver given to it by hand; nothing was run there.
+  Nor was it tried with Anaconda's own channel (`defaults`) configured, as Anaconda and Miniconda
+  installs have it: conda 26.10 then consults that channel too, after conda-forge, in spite of the
+  `nodefaults` line. The test workflow creates the environment on Linux, macOS and Windows and runs
+  the tests in it; that job had not yet run when this was written. Apple's GPUs (`--device mps`)
+  are untried.
 
 ## The notebooks
 
@@ -118,11 +128,40 @@ the logs and weights under `results/`, which three scripts in `tools/` wrote.
 
 ### On your own machine
 
+With pip, into a Python environment of your choice:
+
 ```bash
 git clone https://github.com/shimmeringvoid/Qubic_Zero.git && cd Qubic_Zero
 pip install -e ".[train,notebooks,dev]"   # the library, PyTorch, Jupyter, pytest
-pytest                                     # about 25 seconds
+pytest                                     # under a minute
 jupyter lab notebooks
+```
+
+Or with conda, which brings its own Python. [`environment.yml`](environment.yml) lists the same
+packages, all from conda-forge:
+
+```bash
+git clone https://github.com/shimmeringvoid/Qubic_Zero.git && cd Qubic_Zero
+conda env create -f environment.yml        # an environment named qubic-zero; about half a gigabyte to download
+conda activate qubic-zero
+pytest
+jupyter lab notebooks
+```
+
+**With an NVIDIA card**, conda installs a PyTorch built for CUDA (2.5 to 4 GB to download) when it
+finds a driver that is recent enough for the newest PyTorch, and otherwise one for the CPU, without
+a warning. This tells which it was:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+If the answer is `False` on a machine with such a card, ask for the CUDA build outright. conda then
+installs a PyTorch that the driver supports, an older one if need be, or says what is missing
+(`conda info` lists the driver it found as `__cuda`):
+
+```bash
+conda install -n qubic-zero -c conda-forge --override-channels pytorch-gpu
 ```
 
 `make results` trains everything under `results/` again (about an hour on two cores) and
@@ -141,9 +180,11 @@ python -m qubic_zero.train --run-dir runs/qubic-seed-0 --seed 0 --hours 11
 ```
 
 It checkpoints every ten minutes and when it stops, and a continued run ends exactly as an
-uninterrupted one would (the tests check this, weight for weight). It uses a GPU when there is one.
-On Colab, [notebook 4](notebooks/04_train_on_a_gpu.ipynb) wraps the same two calls, keeps the
-folder on Google Drive and zips the log and the weights at the end.
+uninterrupted one would (the tests check this, weight for weight). It uses a CUDA GPU when there is
+one and the CPU otherwise, and says which in its first lines. When it stops it also zips the
+settings, the log and the weights next to the folder (`runs/qubic-seed-0.zip`): the file to keep or
+to send. On Colab, [notebook 4](notebooks/04_train_on_a_gpu.ipynb) wraps the same calls and keeps
+the folder on Google Drive.
 
 ## Playing
 

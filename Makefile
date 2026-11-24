@@ -1,7 +1,10 @@
-.PHONY: install test lint small-games comparison dry-runs results notebooks
+.PHONY: install conda test lint small-games comparison dry-runs results notebooks
 
 install:  ## the package with PyTorch, plus what the notebooks and the tests need
 	pip install -e ".[train,notebooks,dev]"
+
+conda:  ## the same as a conda environment named qubic-zero (then: conda activate qubic-zero)
+	conda env create -f environment.yml
 
 test:
 	pytest -q

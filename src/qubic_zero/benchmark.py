@@ -26,6 +26,16 @@ __all__ = ["measure", "hours_for", "main"]
 def _wait(device) -> None:
     if device.type == "cuda":
         torch.cuda.synchronize()
+    elif device.type == "mps":
+        torch.mps.synchronize()
+
+
+def _name(device) -> str:
+    if device.type == "cuda":
+        return torch.cuda.get_device_name(device)
+    if device.type == "cpu":
+        return f"CPU, {torch.get_num_threads()} threads"
+    return str(device)
 
 
 def measure(config: Config, seconds: float = 60.0, device=None) -> dict:
@@ -70,9 +80,8 @@ def measure(config: Config, seconds: float = 60.0, device=None) -> dict:
         steps += 1
     _wait(dev)
     learn = time.perf_counter() - start
-    name = torch.cuda.get_device_name(0) if dev.type == "cuda" else f"CPU, {torch.get_num_threads()} threads"
     return {
-        "device": name,
+        "device": _name(dev),
         "positions_per_second": rounds * config.n_games / play,
         "evaluations_per_second": rows["n"] / play,
         "steps_per_second": steps / learn,
@@ -91,7 +100,7 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="Time self-play and learning on this machine.")
     parser.add_argument("--preset", default="4x4x4", choices=sorted(PRESETS))
     parser.add_argument("--seconds", type=float, default=120.0)
-    parser.add_argument("--device", default=None)
+    parser.add_argument("--device", default=None, help="cuda, cpu or mps (default: cuda if there is one, otherwise cpu)")
     for name in ("n_games", "n_sims", "width", "depth", "batch_size"):
         parser.add_argument(f"--{name.replace('_', '-')}", type=int, default=None)
     args = vars(parser.parse_args(argv))

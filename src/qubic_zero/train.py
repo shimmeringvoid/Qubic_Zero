@@ -17,7 +17,9 @@ on exactly where it stopped.  From a terminal::
 
     python -m qubic_zero.train --game 4x4x4 --run-dir runs/qubic --hours 11
 
-starts a run, or continues it if the folder already holds one.
+starts a run, or continues it if the folder already holds one.  When it stops
+it zips the settings, the log and the weights next to the folder
+(:func:`zip_run`): the file to keep or to send.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ import json
 import os
 import signal
 import time
+import zipfile
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
@@ -38,7 +41,7 @@ from .games import LineGame, game_by_name
 from .net import count_weights, make_net, save_weights
 from .search import BatchedSearch
 
-__all__ = ["Config", "PRESETS", "SelfPlay", "Replay", "Trainer", "policy_value_loss", "main"]
+__all__ = ["Config", "PRESETS", "SelfPlay", "Replay", "Trainer", "policy_value_loss", "zip_run", "main"]
 
 
 @dataclass
@@ -414,7 +417,23 @@ class Trainer:
         self.window.restore(state["window"])
         self.history = state["history"]
         if not self.quiet:
-            print(f"continuing {self.run_dir} from round {self.rounds:,} ({self.positions:,} positions, {self.games:,} games)")
+            print(f"continuing {self.run_dir} from round {self.rounds:,} ({self.positions:,} positions, {self.games:,} games)", flush=True)
+
+
+def zip_run(run_dir) -> Path:
+    """Zip what is worth keeping or sending of a run: its settings, its log and its weights.
+
+    The checkpoint stays out: it is large, and only needed to continue the run.
+    The file is written next to the folder, as ``<folder>.zip``, and replaces an older one.
+    """
+    run_dir = Path(run_dir).resolve()
+    files = [run_dir / "config.json", run_dir / "log.jsonl", *sorted((run_dir / "weights").glob("*.npz"))]
+    target = run_dir.with_name(run_dir.name + ".zip")
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+        for file in files:
+            if file.exists() and ".tmp" not in file.name:
+                archive.write(file, f"{run_dir.name}/{file.relative_to(run_dir).as_posix()}")
+    return target
 
 
 def _line(record: dict) -> str:
@@ -510,7 +529,7 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="Train a player by self-play (see the module's description).")
     parser.add_argument("--run-dir", required=True, help="folder of the run; continued if it already holds one")
     parser.add_argument("--hours", type=float, default=None, help="stop (and checkpoint) after this many hours")
-    parser.add_argument("--device", default=None, help="cuda or cpu (default: cuda if there is one)")
+    parser.add_argument("--device", default=None, help="cuda, cpu or mps (default: cuda if there is one, otherwise cpu)")
     parser.add_argument("--preset", default=None, choices=sorted(PRESETS), help="start from these settings (new runs only)")
     for f in fields(Config):
         parser.add_argument(f"--{f.name.replace('_', '-')}", type=type(f.default), default=None, help=f"default {f.default}")
@@ -525,9 +544,11 @@ def main(argv=None) -> None:
     config = config.replace(**given)
     trainer = Trainer(config, run_dir, device=device)
     trainer.evaluators = standard_evaluators(trainer.game, config)
-    print(f"{config.game}: {count_weights(trainer.net):,} weights on {trainer.device}; {config.positions:,} positions planned")
+    print(f"{config.game}: {count_weights(trainer.net):,} weights on {trainer.device}; {config.positions:,} positions planned", flush=True)
     trainer.run(hours=hours)
     print(f"stopped at round {trainer.rounds:,}: {trainer.positions:,} positions, {trainer.games:,} games, {trainer.seconds / 3600:.2f} h")
+    bundle = zip_run(run_dir)
+    print(f"log and weights: {bundle} ({bundle.stat().st_size / 1e6:.2f} MB)")
 
 
 if __name__ == "__main__":

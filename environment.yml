@@ -1,0 +1,28 @@
+# The conda environment for this repository: the library, PyTorch, Jupyter and the tests,
+# all from conda-forge.  It holds what `pip install -e ".[train,notebooks,dev]"` installs
+# (a test keeps the two lists in step).
+#
+#     conda env create -f environment.yml
+#     conda activate qubic-zero
+#
+# With an NVIDIA card and a recent driver, conda picks a PyTorch built for CUDA; otherwise
+# one for the CPU, without a warning.  The README ("On your own machine") says how to
+# check which it was, and how to ask for the CUDA build.
+name: qubic-zero
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.13
+  - pip
+  - numpy>=1.24
+  - pytorch>=2.0
+  - matplotlib-base>=3.7
+  - pandas>=2.0
+  - jupyterlab
+  - nbconvert
+  - ipykernel
+  - pytest
+  - ruff
+  - pip:
+      - -e .

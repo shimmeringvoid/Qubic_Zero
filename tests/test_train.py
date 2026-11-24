@@ -1,4 +1,5 @@
 import json
+import zipfile
 
 import numpy as np
 import pytest
@@ -7,7 +8,7 @@ torch = pytest.importorskip("torch")
 
 from qubic_zero import completing_cells, tictactoe  # noqa: E402
 from qubic_zero.evaluate import standard_evaluators  # noqa: E402
-from qubic_zero.train import Config, Replay, Trainer, main  # noqa: E402
+from qubic_zero.train import Config, Replay, Trainer, main, zip_run  # noqa: E402
 
 SMALL = Config(
     game="3x3", width=16, depth=2, n_games=64, n_sims=12, discount=0.9, noise_alpha=1.0, sampled_moves=3,
@@ -98,3 +99,20 @@ def test_a_run_can_be_started_from_the_command_line(tmp_path, capsys):
     main(["--run-dir", str(tmp_path / "cli"), "--positions", "480"])  # the same run, given a longer budget
     out = capsys.readouterr().out
     assert "continuing" in out and "stopped at round 30" in out
+    # what to send back is zipped next to the run when the command stops
+    assert "log and weights:" in out and "cli.zip" in out
+    assert {"cli/config.json", "cli/log.jsonl", "cli/weights/latest.npz"} <= set(zipfile.ZipFile(tmp_path / "cli.zip").namelist())
+
+
+def test_the_zip_of_a_run_holds_settings_log_and_weights_but_not_the_checkpoint(tmp_path):
+    trainer = Trainer(SMALL.replace(positions=64 * 30), tmp_path / "run", quiet=True)
+    trainer.run()
+    (tmp_path / "run" / "weights" / "latest.tmp.npz").write_bytes(b"left behind by a save that was cut short")
+    path = zip_run(tmp_path / "run")
+    assert path == (tmp_path / "run.zip").resolve()
+    with zipfile.ZipFile(path) as archive:
+        names = set(archive.namelist())
+        assert names == {"run/config.json", "run/log.jsonl", "run/weights/latest.npz", "run/weights/round_0000030.npz"}
+        assert json.loads(archive.read("run/config.json"))["game"] == "3x3"
+        assert len(archive.read("run/log.jsonl").splitlines()) == len(trainer.history)
+    assert zip_run(tmp_path / "run") == path  # a second call replaces the file
